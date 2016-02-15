@@ -1,18 +1,17 @@
 #!/usr/bin/env python
 
 import logging
-import requests
+
 import flask
+import requests
 from flask import Flask
+from flask import render_template
 from flask_sqlalchemy import SQLAlchemy
 
-from flask import request, flash, redirect, render_template, url_for
-from flask import jsonify
-
-from two1.lib.bitcoin.crypto import HDKey, HDPublicKey
-from two1.lib.wallet.hd_account import HDAccount
-from two1.lib.wallet.cache_manager import CacheManager
-from two1.lib.blockchain.twentyone_provider import TwentyOneProvider
+from two1.bitcoin.crypto import HDKey, HDPublicKey
+from two1.wallet.hd_account import HDAccount
+from two1.wallet.cache_manager import CacheManager
+from two1.blockchain.twentyone_provider import TwentyOneProvider
 
 import qrcode
 import base64
@@ -30,10 +29,10 @@ auth_app = Flask(__name__, static_folder='static')
 auth_app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:////tmp/wifiportal21.db'
 db = SQLAlchemy(auth_app)
 
-K = HDPublicKey.from_b58check(receiving_key)
-blockchain_provider = TwentyOneProvider()
-cache = CacheManager()
-receiving_account = HDAccount(hd_key=K, name="hotspot receiving", index=0,data_provider=blockchain_provider, cache_manager=cache)
+K = HDPublicKey.from_b58check(receiving_key) # Change to another method of generating pub from xpub
+blockchain_provider = TwentyOneProvider() # Change to use bitcore
+cache = CacheManager() # I think we can remove this
+receiving_account = HDAccount(hd_key=K, name="hotspot receiving", index=0,data_provider=blockchain_provider, cache_manager=cache) # Change this to be an account in the trezor
 
 SATOSHIS_PER_MBTC = 100*10**3
 SATOSHIS_PER_BTC = 100*10**6
@@ -168,6 +167,7 @@ def static_jquery(path):
 def get_payment_address():
     uuid = flask.request.args.get('token')
     guest = Guest.query.filter_by(uuid=uuid).first()
+    #TODO: Add check on guest to make sure it's an object
     if guest.status == STATUS_NONE or guest.status == STATUS_PAYREQ:
         guest.status = STATUS_PAYREQ
         if not guest.address:

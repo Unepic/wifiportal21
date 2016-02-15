@@ -1,0 +1,6 @@
+build/
+dist/
+envname/
+wifiportal21.egg-info/
+.idea/
+__pycache__/
