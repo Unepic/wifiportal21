@@ -8,11 +8,6 @@ from flask import Flask
 from flask import render_template
 from flask_sqlalchemy import SQLAlchemy
 
-from two1.bitcoin.crypto import HDKey, HDPublicKey
-from two1.wallet.hd_account import HDAccount
-from two1.wallet.cache_manager import CacheManager
-from two1.blockchain.twentyone_provider import TwentyOneProvider
-
 import qrcode
 import base64
 import io
@@ -21,6 +16,7 @@ import uuid
 
 # change the receiving_key in config.py in the root folder.
 from config import receiving_key, SATOSHIS_PER_MINUTE
+from pycoin.key.BIP32Node import BIP32Node
 
 # logging.basicConfig(level=logging.DEBUG)
 logging.basicConfig(level=logging.ERROR)
@@ -29,10 +25,8 @@ auth_app = Flask(__name__, static_folder='static')
 auth_app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:////tmp/wifiportal21.db'
 db = SQLAlchemy(auth_app)
 
-K = HDPublicKey.from_b58check(receiving_key) # Change to another method of generating pub from xpub
-blockchain_provider = TwentyOneProvider() # Change to use bitcore
-cache = CacheManager() # I think we can remove this
-receiving_account = HDAccount(hd_key=K, name="hotspot receiving", index=0,data_provider=blockchain_provider, cache_manager=cache) # Change this to be an account in the trezor
+receiving_account = BIP32Node.from_text(receiving_key)
+
 
 SATOSHIS_PER_MBTC = 100*10**3
 SATOSHIS_PER_BTC = 100*10**6
@@ -40,6 +34,13 @@ SATOSHIS_PER_BTC = 100*10**6
 STATUS_NONE = 0
 STATUS_PAYREQ = 1
 STATUS_PAID = 2
+
+RECEIVING = 0
+CHANGE = 1
+last_indices = {
+                CHANGE: 0,
+                RECEIVING: 0
+                }
 
 class Guest(db.Model):
     uuid = db.Column(db.String, primary_key=True)
@@ -97,7 +98,7 @@ def client_auth():
             if guest.minutes > 0:
                 return("Auth: 1", 200) # Paid, give access!
             else:
-                guest.status == STATUS_NONE
+                guest.status = STATUS_NONE
                 return ("Auth: -1" , 200) # Auth - Invalid
         elif guest.status == STATUS_PAYREQ:
                 return ("Auth: -1" , 200) # Auth - Invalid
@@ -171,14 +172,21 @@ def get_payment_address():
     if guest.status == STATUS_NONE or guest.status == STATUS_PAYREQ:
         guest.status = STATUS_PAYREQ
         if not guest.address:
-            new_address = receiving_account.get_address(False)
-            guest.address = new_address
+            guest.address = generate_new_address()
+
         db.session.commit()
         qr = inline_base64_qrcode(guest.address)
         response = {'address': guest.address, 'qr': qr}
         return flask.json.dumps(response), 200
     else:
         return('must register first', 404)
+
+def generate_new_address(address_type=RECEIVING, index=None):
+    global last_indices
+    if index is None:
+        last_indices[address_type] += 1
+        index = last_indices[address_type]
+    return receiving_account.subkey(address_type).subkey(index).address()
 
 @auth_app.route('/check_payment')
 def check_payment():
