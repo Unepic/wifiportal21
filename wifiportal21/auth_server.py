@@ -22,14 +22,21 @@ from pycoin.key.BIP32Node import BIP32Node
 logging.basicConfig(level=logging.ERROR)
 
 auth_app = Flask(__name__, static_folder='static')
-auth_app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:////tmp/wifiportal21.db'
+#auth_app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:////tmp/wifiportal21.db'
+auth_app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql+pymysql://wifiportal:wifiportalpw@localhost/wifiportal'
+
+BitCoreURL = {
+    'hostname': 'chains.alienseed.com',
+    'api_prefix': '/insight-api'
+}
+
 db = SQLAlchemy(auth_app)
 
 receiving_account = BIP32Node.from_text(receiving_key)
 
 
-SATOSHIS_PER_MBTC = 100*10**3
-SATOSHIS_PER_BTC = 100*10**6
+SATOSHIS_PER_MBTC = 100 * 10 ** 3
+SATOSHIS_PER_BTC = 100 * 10 ** 6
 
 STATUS_NONE = 0
 STATUS_PAYREQ = 1
@@ -43,11 +50,12 @@ last_indices = {
                 }
 
 class Guest(db.Model):
-    uuid = db.Column(db.String, primary_key=True)
+    uuid = db.Column(db.String(255), primary_key=True)
     mac = db.Column(db.String(17), unique=True)
     address = db.Column(db.String(40), unique=True)
     status = db.Column(db.Integer())
     minutes = db.Column(db.Integer())
+    last_balance = db.Column(db.Integer())  # Store the amount of sat in the account last time we verified so we don't repeatedly authorize
 
     def __init__(self, uuid, mac):
         self.uuid = uuid
@@ -55,9 +63,10 @@ class Guest(db.Model):
         self.address = None
         self.status = STATUS_NONE
         self.minutes = -1
+        self.last_balance = 0
 
     def __repr__(self):
-        return "UUID: {0}\nMAC: {1}\nStatus: {2}\nAddress: {3}\nMinutes: {4}".format(self.uuid,self.mac, self.status, self.address, self.minutes)
+        return "UUID: {0}\nMAC: {1}\nStatus: {2}\nAddress: {3}\nMinutes: {4}\nLast Balance: {5}".format(self.uuid, self.mac, self.status, self.address, self.minutes, self.last_balance)
 
 db.create_all()
 
@@ -68,7 +77,7 @@ def client_login():
     success_URL = flask.request.args.get('url')
     token = uuid.uuid4()
     auth_URL = "http://{0}:{1}/wifidog/auth?token={2}".format(gw_address, gw_port, token)
-    price = "The cost of this service is {0:1.6f} BTC, or {1:1.2f} mBTC or {2:,} satoshis per minute".format(SATOSHIS_PER_MINUTE/SATOSHIS_PER_BTC, SATOSHIS_PER_MINUTE/SATOSHIS_PER_MBTC, SATOSHIS_PER_MINUTE)
+    price = "The cost of this service is {0:1.6f} BTC, or {1:1.2f} mBTC or {2:,} satoshis per minute".format(SATOSHIS_PER_MINUTE / SATOSHIS_PER_BTC, SATOSHIS_PER_MINUTE / SATOSHIS_PER_MBTC, SATOSHIS_PER_MINUTE)
     portal_html = render_template('portal.html', auth_URL=auth_URL, token=token, price=price, success_URL=success_URL)
     return portal_html
 
@@ -79,29 +88,29 @@ def client_auth():
     uuid = flask.request.args.get('token')
     guest = Guest.query.filter_by(mac=mac).first()
 
-    if guest: # Existing Guest
-        if guest.uuid != uuid: # Old UUID, update it
+    if guest:  # Existing Guest
+        if guest.uuid != uuid:  # Old UUID, update it
             # print("Found existing under different uuid {0}".format(guest.uuid))
-            guest.uuid = uuid # Update UUID in guest
-            if guest.status == STATUS_PAID and guest.minutes <= 0: # Old guest without balance
+            guest.uuid = uuid  # Update UUID in guest
+            if guest.status == STATUS_PAID and guest.minutes <= 0:  # Old guest without balance
                 guest.status = STATUS_PAYREQ
             db.session.commit()
-    else: # New Guest
-        guest = Guest(uuid,mac)
+    else:  # New Guest
+        guest = Guest(uuid, mac)
         db.session.add(guest)
         db.session.commit()
 
     if stage == "login":
         if guest.status == STATUS_NONE:
-            return ("Auth: -1" , 200) # Auth - Invalid
+            return ("Auth: -1" , 200)  # Auth - Invalid
         elif guest.status == STATUS_PAID:
             if guest.minutes > 0:
-                return("Auth: 1", 200) # Paid, give access!
+                return("Auth: 1", 200)  # Paid, give access!
             else:
                 guest.status = STATUS_NONE
-                return ("Auth: -1" , 200) # Auth - Invalid
+                return ("Auth: -1" , 200)  # Auth - Invalid
         elif guest.status == STATUS_PAYREQ:
-                return ("Auth: -1" , 200) # Auth - Invalid
+                return ("Auth: -1" , 200)  # Auth - Invalid
 
     elif stage == "counters":
         guest = Guest.query.filter_by(uuid=uuid).first()
@@ -109,12 +118,12 @@ def client_auth():
             guest.minutes -= 1
             db.session.commit()
             print("Guest accounting, {0} minutes remain".format(guest.minutes))
-            return("Auth: 1", 200) # Paid, give access!
+            return("Auth: 1", 200)  # Paid, give access!
         else:
             # print("Guest {0} not yet paid".format(uuid))
-            if guest.status == STATUS_PAID: # No more minutes left, restart payment request
+            if guest.status == STATUS_PAID:  # No more minutes left, restart payment request
                 guest.status = STATUS_PAYREQ
-            return ("Auth: 0" , 200) # Auth - Invalid
+            return ("Auth: 0" , 200)  # Auth - Invalid
     else:
         raise Exception("Unknown authorization stage {0}".format(stage))
 
@@ -137,14 +146,14 @@ def auth_status():
 def inline_base64_qrcode(address):
     qr = qrcode.make("bitcoin:{0}".format(address), error_correction=qrcode.constants.ERROR_CORRECT_L)
     output = io.BytesIO()
-    qr.save(output,'PNG')
+    qr.save(output, 'PNG')
     output.seek(0)
     qr_base64 = base64.b64encode(output.read()).decode()
     return qr_base64
 
-def get_unconfirmed_balance(address):
+def get_unconfirmed_balance_blockchain(address):
     r = requests.get('https://blockchain.info/unspent?active={0}'.format(address))
-    # print("Checking balance for {0}".format(address))
+    print("Checking balance for {0}".format(address))
     balance = 0
     if r.status_code == 200:
         utxo_response = r.json()
@@ -152,12 +161,29 @@ def get_unconfirmed_balance(address):
             for utxo in utxo_response['unspent_outputs']:
                 if 'value' in utxo:
                     balance += utxo['value']
-        # print("Balance for {0} is {1}".format(address, balance))
+        print("Balance for {0} is {1}".format(address, balance))
         return balance
-    elif r.status_code == 500: # No UTXO to spend
+    elif r.status_code == 500:  # No UTXO to spend
         return balance
     else:
         raise Exception("Error checking balance, unexpected HTTP code: {0} {1}".format(r.status_code, r.text))
+
+def get_unconfirmed_balance_bitcore(address):
+    r = requests.get('https://{0}{1}/addr/{2}/balance'.format(BitCoreURL['hostname'], BitCoreURL['api_prefix'], address))
+    print("Checking balance for {0}".format(address))
+    balance = 0
+    if r.status_code == 200:
+        balance = int(r.text)
+        print("Balance for {0} is {1}".format(address, balance))
+        return balance
+    elif r.status_code == 500:  # No UTXO to spend
+        return balance
+    else:
+        raise Exception("Error checking balance, unexpected HTTP code: {0} {1}".format(r.status_code, r.text))
+
+def get_unconfirmed_balance(address):
+    return get_unconfirmed_balance_bitcore(address)
+    # get_unconfirmed_balance_blockchain(address)
 
 @auth_app.route('/static/<path:path>')
 @auth_app.route('/js/<path:path>')
@@ -168,7 +194,7 @@ def static_jquery(path):
 def get_payment_address():
     uuid = flask.request.args.get('token')
     guest = Guest.query.filter_by(uuid=uuid).first()
-    #TODO: Add check on guest to make sure it's an object
+    # TODO: Add check on guest to make sure it's an object
     if guest.status == STATUS_NONE or guest.status == STATUS_PAYREQ:
         guest.status = STATUS_PAYREQ
         if not guest.address:
@@ -197,11 +223,14 @@ def check_payment():
     # assert guest.address
     address = guest.address
     unconf_balance = get_unconfirmed_balance(address)
-    if unconf_balance > 0: # Payment detected on this address
+    # We check the last balance vs the current balance to see if they have paid more
+    # since the last time we authorized them
+    if unconf_balance > 0 and unconf_balance > guest.last_balance:  # Payment detected on this address
         guest.status = STATUS_PAID
         minutes = unconf_balance // SATOSHIS_PER_MINUTE
+        guest.last_balance = unconf_balance
         # assert minutes > 0
-        # print("Allocating {0} stoshis, {1} minutes to guest {2}".format(unconf_balance,minutes, uuid))
+        # print("Allocating {0} satoshis, {1} minutes to guest {2}".format(unconf_balance,minutes, uuid))
         guest.minutes = minutes
         db.session.commit()
         return("Payment received", 200)
