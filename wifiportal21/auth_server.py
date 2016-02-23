@@ -202,7 +202,10 @@ def get_payment_address():
 def generate_new_address(index=None):
     if index is None:
         result = db.session.query(func.max(Guest.address_index).label("max_index")).one()
-        index = result.max_index + 1
+        if result and result.max_index:
+            index = result.max_index + 1
+        else:
+            index = 0
     return receiving_account.subkey(RECEIVING).subkey(index).address()
 
 @auth_app.route('/check_payment')
