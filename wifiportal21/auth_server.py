@@ -15,8 +15,9 @@ import io
 import uuid
 
 # change the receiving_key in config.py in the root folder.
-from config import receiving_key, SATOSHIS_PER_MINUTE
+from config import receiving_key, SATOSHIS_PER_MINUTE, BitCoreURL
 from pycoin.key.BIP32Node import BIP32Node
+from sqlalchemy.sql.functions import func
 
 # logging.basicConfig(level=logging.DEBUG)
 logging.basicConfig(level=logging.ERROR)
@@ -24,11 +25,6 @@ logging.basicConfig(level=logging.ERROR)
 auth_app = Flask(__name__, static_folder='static')
 #auth_app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:////tmp/wifiportal21.db'
 auth_app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql+pymysql://wifiportal:wifiportalpw@localhost/wifiportal'
-
-BitCoreURL = {
-    'hostname': 'chains.alienseed.com',
-    'api_prefix': '/insight-api'
-}
 
 db = SQLAlchemy(auth_app)
 
@@ -43,16 +39,12 @@ STATUS_PAYREQ = 1
 STATUS_PAID = 2
 
 RECEIVING = 0
-CHANGE = 1
-last_indices = {
-                CHANGE: 0,
-                RECEIVING: 0
-                }
 
 class Guest(db.Model):
     uuid = db.Column(db.String(255), primary_key=True)
     mac = db.Column(db.String(17), unique=True)
     address = db.Column(db.String(40), unique=True)
+    address_index = db.Column(db.Integer(), unique=True)
     status = db.Column(db.Integer())
     minutes = db.Column(db.Integer())
     last_balance = db.Column(db.Integer())  # Store the amount of sat in the account last time we verified so we don't repeatedly authorize
@@ -66,7 +58,7 @@ class Guest(db.Model):
         self.last_balance = 0
 
     def __repr__(self):
-        return "UUID: {0}\nMAC: {1}\nStatus: {2}\nAddress: {3}\nMinutes: {4}\nLast Balance: {5}".format(self.uuid, self.mac, self.status, self.address, self.minutes, self.last_balance)
+        return "UUID: {0}\nMAC: {1}\nStatus: {2}\nAddress: {3}\nMinutes: {4}\nLast Balance: {5}\nKey Index: {6}".format(self.uuid, self.mac, self.status, self.address, self.minutes, self.last_balance, self.address_index)
 
 db.create_all()
 
@@ -169,7 +161,7 @@ def get_unconfirmed_balance_blockchain(address):
         raise Exception("Error checking balance, unexpected HTTP code: {0} {1}".format(r.status_code, r.text))
 
 def get_unconfirmed_balance_bitcore(address):
-    r = requests.get('https://{0}{1}/addr/{2}/balance'.format(BitCoreURL['hostname'], BitCoreURL['api_prefix'], address))
+    r = requests.get('https://{0}/addr/{1}/unconfirmedBalance'.format(BitCoreURL, address))
     print("Checking balance for {0}".format(address))
     balance = 0
     if r.status_code == 200:
@@ -207,12 +199,11 @@ def get_payment_address():
     else:
         return('must register first', 404)
 
-def generate_new_address(address_type=RECEIVING, index=None):
-    global last_indices
+def generate_new_address(index=None):
     if index is None:
-        last_indices[address_type] += 1
-        index = last_indices[address_type]
-    return receiving_account.subkey(address_type).subkey(index).address()
+        result = db.session.query(func.max(Guest.address_index).label("max_index")).one()
+        index = result.max_index + 1
+    return receiving_account.subkey(RECEIVING).subkey(index).address()
 
 @auth_app.route('/check_payment')
 def check_payment():
